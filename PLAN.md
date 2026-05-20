@@ -9,7 +9,7 @@
 
 Build REST + WebSocket backend cho dating app mobile (Expo/React Native). Frontend đã có mock data; BE cung cấp API thật để swap vào ở bước cuối (`DAT-012`).
 
-App không có login truyền thống — auth qua **Email Magic Link** (nhập email → nhận link → click → JWT). Onboarding 9 bước thay thế hoàn toàn signup form.
+App không có login truyền thống — auth qua **số điện thoại** (nhập SĐT → tạo tài khoản ngay, không OTP lúc đăng ký). Onboarding 10 bước (step 0 = phone → steps 1–9 = profile). FE giữ data local từ step 1–8, gửi 1 PATCH duy nhất ở step 9.
 
 ---
 
@@ -21,8 +21,8 @@ App không có login truyền thống — auth qua **Email Magic Link** (nhập 
 | ORM | Prisma | TypeScript-first, type-safe, migration CLI |
 | Database | PostgreSQL + PostGIS | Geo-query cho distance matching |
 | Cache / Queue | Redis + BullMQ | Session token, match cache, job queue |
-| Auth | Email Magic Link + JWT (access + refresh) | Không password, UX mượt |
-| Email service | Resend | API đơn giản, free 3k email/tháng |
+| Auth | Phone number + JWT (access + refresh) | Không password, không OTP lúc đăng ký, UX mượt |
+| SMS service | Twilio (dev: console log) | Gửi OTP verify SĐT trong Profile |
 | File storage | AWS S3 | Photo upload cho profile |
 | Real-time | Socket.io (`@nestjs/websockets`) | Chat, typing indicator, read receipts |
 | Package manager | Bun | Đồng bộ với FE |
@@ -31,21 +31,38 @@ App không có login truyền thống — auth qua **Email Magic Link** (nhập 
 
 ---
 
-## 3. Auth Flow (Magic Link)
+## 3. Auth Flow
 
+### Đăng ký / Đăng nhập (không OTP, không friction)
 ```
-1. FE POST /auth/magic-link { email }
-2. BE tạo UUID token (TTL 15 phút), lưu Redis key: magic:<token> = userId/email
-3. BE gửi email qua Resend: link = https://app.com/auth/verify?token=<uuid>
-4. User click link → FE gửi GET /auth/verify?token=<uuid>
-5. BE verify token từ Redis → xoá token khỏi Redis
-6. BE tạo/lấy user theo email → trả:
-   - accessToken (JWT, TTL 15 phút)
+1. FE POST /auth/phone { phoneCode, phoneNumber }
+   — phoneCode: "84" (không có +), phoneNumber: "901234567"
+2. BE upsert User theo (phoneCode + phoneNumber) duy nhất
+3. BE trả:
+   - accessToken  (JWT, TTL 15 phút)
    - refreshToken (JWT, TTL 30 ngày, lưu DB)
-7. FE lưu cả 2 token, tự gọi POST /auth/refresh khi access hết hạn
+   - isNewUser: boolean  — FE dùng để quyết định vào onboarding hay main app
+4. FE lưu cả 2 token, tự gọi POST /auth/refresh khi access hết hạn
 ```
 
-**Lưu ý FE**: Cần thêm màn Email trước NameScreen (màn 0 của onboarding). Sau khi verify magic link → vào màn 1 như bình thường.
+**Returning user**: token hết hạn → gọi lại `POST /auth/phone` với cùng SĐT → nhận JWT mới, không mất data.
+
+### Onboarding (chạy sau đăng ký)
+```
+Step 0  → /auth/phone đã xử lý ở trên, trả JWT + isNewUser=true → FE bắt đầu onboarding
+Step 1–8 → FE giữ data local (không gọi API)
+Step 9  → FE gọi PATCH /users/me { displayName, birthDate, gender, ... tất cả fields }
+          BE lưu 1 lần, set onboardingStep=9, completed=true
+```
+
+### Phone Verification (tùy chọn, trong Profile)
+```
+1. User vào Profile → "Xác thực số điện thoại"
+2. POST /users/me/phone/verify/send  → BE gửi OTP 6 số qua SMS (Twilio)
+3. POST /users/me/phone/verify/confirm { otp }  → BE verify → set phoneVerified=true
+```
+
+**Dev mode**: Không cấu hình Twilio → OTP in ra `console.log` thay vì gửi SMS thật.
 
 ---
 
@@ -53,22 +70,26 @@ App không có login truyền thống — auth qua **Email Magic Link** (nhập 
 
 ```prisma
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String   @id @default(cuid())
+  phoneCode     String                        // "84" (không có +)
+  phoneNumber   String                        // "901234567"
+  phoneVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  profile      UserProfile?
-  preferences  MatchPreferences?
-  photos       UserPhoto[]
-  interests    UserInterest[]
-  location     UserLocation?
+  profile       UserProfile?
+  preferences   MatchPreferences?
+  photos        UserPhoto[]
+  interests     UserInterest[]
+  location      UserLocation?
   refreshTokens RefreshToken[]
-  swipesGiven  Swipe[]  @relation("SwipeFrom")
+  swipesGiven   Swipe[]  @relation("SwipeFrom")
   swipesReceived Swipe[] @relation("SwipeTo")
-  matchesAs1   Match[]  @relation("MatchUser1")
-  matchesAs2   Match[]  @relation("MatchUser2")
-  messages     Message[]
+  matchesAs1    Match[]  @relation("MatchUser1")
+  matchesAs2    Match[]  @relation("MatchUser2")
+  messages      Message[]
+
+  @@unique([phoneCode, phoneNumber])
 }
 
 model UserProfile {
@@ -178,24 +199,17 @@ model Message {
 ### Auth
 | Method | Path | Mô tả |
 |---|---|---|
-| POST | `/auth/magic-link` | Gửi magic link tới email |
-| GET | `/auth/verify` | Verify token → trả JWT |
-| POST | `/auth/refresh` | Refresh access token |
-| POST | `/auth/logout` | Revoke refresh token |
+| POST | `/auth/phone` | `{ phoneCode, phoneNumber }` → upsert user → trả JWT pair + `isNewUser` |
+| POST | `/auth/refresh` | `{ refreshToken }` → trả access token mới |
+| POST | `/auth/logout` | `{ refreshToken }` → revoke |
 
 ### Onboarding
+> FE giữ data local qua các bước, chỉ gọi API ở bước cuối.
+
 | Method | Path | Mô tả |
 |---|---|---|
-| POST | `/onboarding/step/1` | displayName |
-| POST | `/onboarding/step/2` | birthDate (zodiac tự tính BE) |
-| POST | `/onboarding/step/3` | gender |
-| POST | `/onboarding/step/4` | lookingFor |
-| POST | `/onboarding/step/5` | ageMin, ageMax |
-| POST | `/onboarding/step/6` | interests (array InterestAnswer) |
-| POST | `/onboarding/step/7` | photos (trigger upload trước, truyền URLs) |
-| POST | `/onboarding/step/8` | maxDistanceKm |
-| POST | `/onboarding/step/9` | relationshipType → set completed = true |
-| GET | `/onboarding/status` | Trả step hiện tại (resume sau crash) |
+| PATCH | `/users/me/onboarding` | Gửi toàn bộ profile 1 lần sau step 9: `{ displayName, birthDate, gender, lookingFor, ageMin, ageMax, interests, photoUrls, maxDistanceKm, relationshipType }` → set `completed=true` |
+| GET | `/users/me/onboarding` | Trả `{ completed, onboardingStep }` để resume sau crash |
 
 ### Media
 | Method | Path | Mô tả |
@@ -206,9 +220,11 @@ model Message {
 ### Users
 | Method | Path | Mô tả |
 |---|---|---|
-| GET | `/users/me` | Full profile của user hiện tại |
-| PATCH | `/users/me` | Cập nhật profile fields |
-| PATCH | `/users/me/location` | Cập nhật vị trí `{ lat, lng }` |
+| GET | `/users/me` | Full profile (bao gồm `phoneVerified`) |
+| PATCH | `/users/me` | Cập nhật profile fields sau onboarding |
+| PATCH | `/users/me/location` | `{ lat, lng }` |
+| POST | `/users/me/phone/verify/send` | Gửi OTP SMS tới SĐT của user (DAT-011) |
+| POST | `/users/me/phone/verify/confirm` | `{ otp }` → set `phoneVerified=true` (DAT-011) |
 
 ### Matching
 | Method | Path | Mô tả |
@@ -326,16 +342,16 @@ dating_BE/
 | # | Task ID | Tóm tắt | Acceptance |
 |---|---|---|---|
 | 1 | `DAT-002` | **Scaffold**: `nest new`, cấu trúc folder, Prisma init, Docker Compose (postgres + redis + pgadmin), `.env.example`, `GET /api/health` | `docker compose up` + `bun run start:dev` chạy, health 200 |
-| 2 | `DAT-003` | **Auth module**: POST `/auth/magic-link`, GET `/auth/verify`, POST `/auth/refresh`, POST `/auth/logout`. Token lưu Redis, refresh token lưu DB | Unit test PASS, token hết hạn reject 401 |
-| 3 | `DAT-004` | **Prisma schema**: Toàn bộ models + migration + seed 20 mock users (có location, interests, photos đủ để test matching) | `prisma migrate dev` PASS, seed chạy, 20 users trong DB |
-| 4 | `DAT-005` | **Onboarding API**: POST `/onboarding/step/1..9` validate + persist từng bước. Step 9 → `completed = true`. GET `/onboarding/status` | 9 step call đúng, profile complete sau step 9, resume sau crash |
+| 2 | `DAT-003` | **Auth module**: POST `/auth/otp/send`, POST `/auth/otp/verify`, POST `/auth/refresh`, POST `/auth/logout`. OTP lưu Redis TTL 5 phút, refresh token lưu DB. Định danh theo SĐT (E.164) | Unit test PASS, OTP hết hạn/sai reject 401 |
+| 3 | `DAT-004` | **Prisma schema**: Toàn bộ models + migration + seed 20 mock users. User có `phone` (unique), `phoneVerified`, email optional | `prisma migrate dev` PASS, seed chạy, 20 users trong DB |
+| 4 | `DAT-005` | **Onboarding API**: POST `/onboarding/step/0` (phone) + step 1–9. Step 9 → `completed = true`. GET `/onboarding/status` | 10 step call đúng, profile complete sau step 9, resume sau crash |
 | 5 | `DAT-006` | **Media module**: POST `/media/upload` multipart → S3 → trả URL. Validate MIME type (image/*) + size ≤ 10MB | Ảnh lên S3, URL trả đúng, file quá size reject 400 |
 | 6 | `DAT-007` | **Matching module**: GET `/matching/candidates` — filter gender + age + PostGIS distance + relationship type + ≥1 interest chung, cursor pagination, loại đã swipe | Filter đúng với mock data; PostGIS `ST_DWithin` query chạy |
 | 7 | `DAT-008` | **Swipe module**: POST `/swipes`. Mutual LIKE → tạo Match + Conversation tự động. GET `/swipes/liked-me`, `/swipes/liked-by-me` | Mutual like test PASS, match row tạo đúng |
 | 8 | `DAT-009` | **Chat REST**: GET `/conversations`, GET `/conversations/:id/messages` (cursor), POST `/conversations/:id/messages` | REST flow đúng, pagination cursor hoạt động |
 | 9 | `DAT-010` | **Chat WebSocket**: Socket.io gateway — join_room, send_message, typing_start/stop, mark_read. Status DELIVERED → READ sync DB | WS events fire, status cập nhật DB, test với wscat |
-| 10 | `DAT-011` | **Profile edit**: PATCH `/users/me` fields, PATCH `/users/me/location`, DELETE `/media/:id` (xoá ảnh S3 + DB) | PATCH persist đúng, guard bảo vệ, xoá ảnh S3 thật |
-| 11 | `DAT-012` | **Wire FE ↔ BE**: Cập nhật FE `src/api/axios/config.ts` baseURL → local BE, test full flow onboarding → swipe → match → chat | Full flow chạy trên simulator với BE local |
+| 10 | `DAT-011` | **Profile edit + phone verify**: PATCH `/users/me`, PATCH `/users/me/location`. Phone verify flow: POST `/users/me/phone/verify/send` + confirm → `phoneVerified=true` | PATCH persist đúng, verify flow set flag, guard bảo vệ |
+| 11 | `DAT-012` | **Wire FE ↔ BE**: Cập nhật FE `src/api/axios/config.ts` baseURL → local BE, test full flow: phone OTP → onboarding → swipe → match → chat | Full flow chạy trên simulator với BE local |
 
 ---
 

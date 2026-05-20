@@ -10,10 +10,73 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Full schema defined in DAT-004. Placeholder model to allow `prisma generate`.
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  createdAt DateTime @default(now())
+  id            String           @id @default(cuid())
+  phoneCode     String
+  phoneNumber   String
+  phoneVerified Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  refreshTokens RefreshToken[]
+  profile       UserProfile?
+  preferences   MatchPreferences?
+  photos        UserPhoto[]
+  interests     UserInterest[]
+  location      UserLocation?
+
+  @@unique([phoneCode, phoneNumber])
+}
+
+model UserProfile {
+  userId         String    @id
+  displayName    String?
+  birthDate      DateTime?
+  zodiac         String?
+  gender         String?
+  bio            String?
+  completed      Boolean   @default(false)
+  onboardingStep Int       @default(0)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MatchPreferences {
+  userId           String  @id
+  lookingFor       String?
+  ageMin           Int?
+  ageMax           Int?
+  maxDistanceKm    Int?
+  relationshipType String?
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserPhoto {
+  id     String @id @default(cuid())
+  userId String
+  url    String
+  order  Int
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserInterest {
+  id              String   @id @default(cuid())
+  userId          String
+  questionId      String
+  selectedOptions String[]
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserLocation {
+  userId    String   @id
+  lat       Float
+  lng       Float
   updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

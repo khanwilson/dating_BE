@@ -11,6 +11,7 @@
     "outDir": "./dist",
     "rootDir": "./api",
     "incremental": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "skipLibCheck": true,
     "strictNullChecks": true,
     "noImplicitAny": true,
