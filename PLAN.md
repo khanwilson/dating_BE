@@ -52,7 +52,7 @@ App không có login truyền thống — auth qua **số điện thoại** (nh�
 Step 0  → /auth/phone đã xử lý ở trên, trả JWT + isNewUser=true → FE bắt đầu onboarding
 Step 1–8 → FE giữ data local (không gọi API)
 Step 9  → FE gọi PATCH /users/me { displayName, birthDate, gender, ... tất cả fields }
-          BE lưu 1 lần, set onboardingStep=9, completed=true
+          BE lưu 1 lần
 ```
 
 ### Phone Verification (tùy chọn, trong Profile)
@@ -99,8 +99,6 @@ model UserProfile {
   zodiac         String?
   gender         String?   // Male | Female | NonBinary | PreferNotToSay
   bio            String?
-  completed      Boolean  @default(false)
-  onboardingStep Int      @default(0)
   user           User     @relation(fields: [userId], references: [id])
 }
 
@@ -209,7 +207,7 @@ model Message {
 | Method | Path | Mô tả |
 |---|---|---|
 | PATCH | `/users/me/onboarding` | Gửi toàn bộ profile 1 lần sau step 9: `{ displayName, birthDate, gender, lookingFor, ageMin, ageMax, interests, photoUrls, maxDistanceKm, relationshipType }` → set `completed=true` |
-| GET | `/users/me/onboarding` | Trả `{ completed, onboardingStep }` để resume sau crash |
+| GET | `/users/me/onboarding` | Trả trạng thái onboarding để resume sau crash |
 
 ### Media
 | Method | Path | Mô tả |
@@ -344,7 +342,7 @@ dating_BE/
 | 1 | `DAT-002` | **Scaffold**: `nest new`, cấu trúc folder, Prisma init, Docker Compose (postgres + redis + pgadmin), `.env.example`, `GET /api/health` | `docker compose up` + `bun run start:dev` chạy, health 200 |
 | 2 | `DAT-003` | **Auth module**: POST `/auth/otp/send`, POST `/auth/otp/verify`, POST `/auth/refresh`, POST `/auth/logout`. OTP lưu Redis TTL 5 phút, refresh token lưu DB. Định danh theo SĐT (E.164) | Unit test PASS, OTP hết hạn/sai reject 401 |
 | 3 | `DAT-004` | **Prisma schema**: Toàn bộ models + migration + seed 20 mock users. User có `phone` (unique), `phoneVerified`, email optional | `prisma migrate dev` PASS, seed chạy, 20 users trong DB |
-| 4 | `DAT-005` | **Onboarding API**: POST `/onboarding/step/0` (phone) + step 1–9. Step 9 → `completed = true`. GET `/onboarding/status` | 10 step call đúng, profile complete sau step 9, resume sau crash |
+| 4 | `DAT-005` | **Onboarding API**: PATCH `/users/me/onboarding` gửi toàn bộ data 1 lần. GET `/onboarding/status` để resume sau crash |
 | 5 | `DAT-006` | **Media module**: POST `/media/upload` multipart → S3 → trả URL. Validate MIME type (image/*) + size ≤ 10MB | Ảnh lên S3, URL trả đúng, file quá size reject 400 |
 | 6 | `DAT-007` | **Matching module**: GET `/matching/candidates` — filter gender + age + PostGIS distance + relationship type + ≥1 interest chung, cursor pagination, loại đã swipe | Filter đúng với mock data; PostGIS `ST_DWithin` query chạy |
 | 7 | `DAT-008` | **Swipe module**: POST `/swipes`. Mutual LIKE → tạo Match + Conversation tự động. GET `/swipes/liked-me`, `/swipes/liked-by-me` | Mutual like test PASS, match row tạo đúng |

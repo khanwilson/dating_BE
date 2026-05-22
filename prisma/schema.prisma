@@ -11,20 +11,34 @@ datasource db {
 }
 
 model User {
-  id            String           @id @default(cuid())
+  id            String            @id @default(cuid())
   phoneCode     String
   phoneNumber   String
-  phoneVerified Boolean          @default(false)
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  phoneVerified Boolean           @default(false)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
   refreshTokens RefreshToken[]
   profile       UserProfile?
   preferences   MatchPreferences?
   photos        UserPhoto[]
   interests     UserInterest[]
   location      UserLocation?
+  swipesGiven   Swipe[]           @relation("SwipeFrom")
+  swipesReceived Swipe[]          @relation("SwipeTo")
 
   @@unique([phoneCode, phoneNumber])
+}
+
+model Swipe {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  action     String   // LIKE | PASS | SUPERLIKE
+  createdAt  DateTime @default(now())
+  fromUser   User     @relation("SwipeFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser     User     @relation("SwipeTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
 }
 
 model UserProfile {
@@ -34,8 +48,6 @@ model UserProfile {
   zodiac         String?
   gender         String?
   bio            String?
-  completed      Boolean   @default(false)
-  onboardingStep Int       @default(0)
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
