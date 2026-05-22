@@ -35,30 +35,55 @@ NestJS monorepo with source under `api/`. Prisma ORM targets PostgreSQL with Pos
 
 | Module | Status | Role |
 |--------|--------|------|
-| `auth` | Done | Phone-based login, JWT access + refresh tokens, Redis token revocation |
+| `auth` | Done | OTP phone login, JWT access + refresh tokens, Redis OTP/token storage |
 | `users` | Done | Profile read/update |
+| `swipes` | Done | Geo-based candidate discovery with cursor pagination |
 | `onboarding` | Skeleton | User setup flow |
 | `media` | Skeleton | S3 photo uploads |
 | `matching` | Skeleton | Match algorithm |
-| `swipes` | Skeleton | Like/dislike interactions |
 | `chat` | Skeleton | Real-time chat (Socket.io ready) |
 
-### Auth flow
+### Auth flow (OTP 2-step)
 
-- `POST /api/auth/phone` — upsert user by phone → issue access token (15m) + refresh token (30d, stored in Redis)
-- `POST /api/auth/refresh` — validate refresh token in Redis → issue new pair
-- `POST /api/auth/logout` — delete refresh token from Redis
-- All protected routes use `JwtAuthGuard` + `@CurrentUser()` decorator (extracts `userId`)
+- `POST /api/auth/phone-otp/register` — create new user by phone → `409 PHONE_ALREADY_REGISTERED` if exists → returns `{ accessToken, refreshToken }`
+- `POST /api/auth/phone-otp/request` — request OTP for existing user → `404 PHONE_NOT_REGISTERED` if not found → returns `{ message }`
+- `POST /api/auth/phone-otp/confirm` — verify OTP → returns `{ accessToken, refreshToken, isNewUser }`
+- `POST /api/auth/refresh` — rotate access token using refresh token
+- `POST /api/auth/logout` — revoke refresh token
+- All protected routes use `JwtAuthGuard` + `@CurrentUser()` decorator (extracts `{ userId }` object)
+- **Dev OTP**: `000000` always accepted when `NODE_ENV !== production`
+- OTP stored in Redis with 5-minute TTL, key: `otp:{phoneCode}:{phoneNumber}`
+- Access token: 7d (`JWT_ACCESS_EXPIRES_IN`), Refresh token: 30d (`JWT_REFRESH_EXPIRES_IN`)
+
+### Swipes / Candidates
+
+- `GET /api/swipes/candidates?lat=&lng=&limit=&cursor=` — returns nearby users sorted by distance
+- Side-effect: upserts requester's location on every call
+- Filters: `displayName IS NOT NULL`, distance ≤ `maxDistanceKm`, age range, gender (`lookingFor`), excludes already-swiped
+- Cursor pagination: base64url-encoded `{ distanceM, id }`
+- PostGIS column `location geography(Point,4326)` on `UserLocation` is **NOT in Prisma schema** — managed via raw SQL. It gets dropped on `prisma db push` and must be re-added:
+  ```sql
+  ALTER TABLE "UserLocation" ADD COLUMN IF NOT EXISTS location geography(Point, 4326);
+  CREATE INDEX IF NOT EXISTS idx_userlocation_location ON "UserLocation" USING GIST(location);
+  UPDATE "UserLocation" SET location = ST_MakePoint(lng, lat)::geography WHERE location IS NULL;
+  ```
 
 ### Database models (prisma/schema.prisma)
 
 - `User` — phone-based identity (`phoneCode` + `phoneNumber` unique)
-- `UserProfile` — display name, birthDate, gender, zodiac, bio, onboarding flags
+- `UserProfile` — displayName, birthDate, gender, zodiac, bio (no `completed` or `onboardingStep`)
 - `MatchPreferences` — lookingFor, ageMin/ageMax, maxDistanceKm, relationshipType (`ShortTerm | LongTerm | Friends`)
 - `UserPhoto` — ordered photo URLs
 - `UserInterest` — quiz responses (questionId + selectedOptions[])
-- `UserLocation` — lat/lng coordinates
-- `RefreshToken` — JWT refresh token storage (Redis is primary; this may be secondary)
+- `UserLocation` — lat/lng + PostGIS geography column (managed outside schema)
+- `RefreshToken` — refresh token storage with expiry
+- `Swipe` — fromUserId/toUserId/action (`LIKE | PASS | SUPERLIKE`), unique per pair
+
+### Data conventions
+
+- `gender` and `lookingFor` stored as **lowercase** strings (`male`, `female`, `everyone`)
+- Seed data in `api/seed-data.ts` — 30 users (15 HCM, 15 Hanoi)
+- Seed endpoint: `POST /seed` (blocked in production)
 
 ### Shared utilities (`api/common/`)
 
