@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CandidatesQueryDto } from './dto/candidates-query.dto';
+import { CreateSwipeDto, SwipeAction } from './dto/create-swipe.dto';
 
 interface CandidateRow {
   id: string;
@@ -149,5 +150,143 @@ export class SwipesService {
       hasMore && lastRow ? encodeCursor(Number(lastRow.dist_m), lastRow.id) : null;
 
     return { data, nextCursor };
+  }
+
+  async swipe(userId: string, dto: CreateSwipeDto) {
+    const { toUserId, action } = dto;
+
+    await this.prisma.swipe.upsert({
+      where: { fromUserId_toUserId: { fromUserId: userId, toUserId } },
+      create: { fromUserId: userId, toUserId, action },
+      update: { action },
+    });
+
+    if (action === SwipeAction.PASS) {
+      return { isMatch: false };
+    }
+
+    const reverseSwipe = await this.prisma.swipe.findUnique({
+      where: { fromUserId_toUserId: { fromUserId: toUserId, toUserId: userId } },
+    });
+
+    if (!reverseSwipe || reverseSwipe.action === SwipeAction.PASS) {
+      return { isMatch: false };
+    }
+
+    const [user1Id, user2Id] = [userId, toUserId].sort();
+    const match = await this.prisma.match.upsert({
+      where: { user1Id_user2Id: { user1Id, user2Id } },
+      create: { user1Id, user2Id, status: 'active', matchCount: 1 },
+      update: { status: 'active', matchCount: { increment: 1 } },
+    });
+
+    return { isMatch: true, matchId: match.id };
+  }
+
+  async getLikedMe(userId: string) {
+    const swipes = await this.prisma.swipe.findMany({
+      where: { toUserId: userId, action: { in: ['LIKE', 'SUPERLIKE'] } },
+      select: { fromUserId: true },
+    });
+
+    const likerIds = swipes.map((s) => s.fromUserId);
+    if (likerIds.length === 0) return { data: [] };
+
+    const activeMatches = await this.prisma.match.findMany({
+      where: { status: 'active', OR: [{ user1Id: userId }, { user2Id: userId }] },
+      select: { user1Id: true, user2Id: true },
+    });
+
+    const matchedIds = new Set(
+      activeMatches.flatMap((m) => [m.user1Id, m.user2Id]).filter((id) => id !== userId),
+    );
+
+    const pendingIds = likerIds.filter((id) => !matchedIds.has(id));
+    if (pendingIds.length === 0) return { data: [] };
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: pendingIds } },
+      include: {
+        profile: { select: { displayName: true, birthDate: true } },
+        photos: { orderBy: { order: 'asc' }, take: 1 },
+      },
+    });
+
+    return {
+      data: users.map((u) => ({
+        id: u.id,
+        displayName: u.profile?.displayName ?? null,
+        age: u.profile?.birthDate ? calcAge(new Date(u.profile.birthDate)) : null,
+        photo: u.photos[0]?.url ?? null,
+      })),
+    };
+  }
+
+  async getLikedByMe(userId: string) {
+    const swipes = await this.prisma.swipe.findMany({
+      where: { fromUserId: userId, action: { in: ['LIKE', 'SUPERLIKE'] } },
+      select: { toUserId: true },
+    });
+
+    const likedIds = swipes.map((s) => s.toUserId);
+    if (likedIds.length === 0) return { data: [] };
+
+    const activeMatches = await this.prisma.match.findMany({
+      where: { status: 'active', OR: [{ user1Id: userId }, { user2Id: userId }] },
+      select: { user1Id: true, user2Id: true },
+    });
+
+    const matchedIds = new Set(
+      activeMatches.flatMap((m) => [m.user1Id, m.user2Id]).filter((id) => id !== userId),
+    );
+
+    const pendingIds = likedIds.filter((id) => !matchedIds.has(id));
+    if (pendingIds.length === 0) return { data: [] };
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: pendingIds } },
+      include: {
+        profile: { select: { displayName: true, birthDate: true } },
+        photos: { orderBy: { order: 'asc' }, take: 1 },
+      },
+    });
+
+    return {
+      data: users.map((u) => ({
+        id: u.id,
+        displayName: u.profile?.displayName ?? null,
+        age: u.profile?.birthDate ? calcAge(new Date(u.profile.birthDate)) : null,
+        photo: u.photos[0]?.url ?? null,
+      })),
+    };
+  }
+
+  async unmatch(userId: string, matchId: string) {
+    const match = await this.prisma.match.findUnique({ where: { id: matchId } });
+
+    if (!match || (match.user1Id !== userId && match.user2Id !== userId)) {
+      throw new NotFoundException('Match not found');
+    }
+
+    if (match.status !== 'active') {
+      throw new BadRequestException('Match is not active');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.match.update({
+        where: { id: matchId },
+        data: { status: 'unmatched' },
+      }),
+      this.prisma.swipe.deleteMany({
+        where: {
+          OR: [
+            { fromUserId: match.user1Id, toUserId: match.user2Id },
+            { fromUserId: match.user2Id, toUserId: match.user1Id },
+          ],
+        },
+      }),
+    ]);
+
+    return { success: true };
   }
 }

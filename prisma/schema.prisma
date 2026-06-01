@@ -23,8 +23,10 @@ model User {
   photos        UserPhoto[]
   interests     UserInterest[]
   location      UserLocation?
-  swipesGiven   Swipe[]           @relation("SwipeFrom")
+  swipesGiven    Swipe[]           @relation("SwipeFrom")
   swipesReceived Swipe[]          @relation("SwipeTo")
+  matchesAsUser1 Match[]          @relation("MatchUser1")
+  matchesAsUser2 Match[]          @relation("MatchUser2")
 
   @@unique([phoneCode, phoneNumber])
 }
@@ -83,6 +85,20 @@ model UserLocation {
   lng       Float
   updatedAt DateTime @updatedAt
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Match {
+  id         String   @id @default(cuid())
+  user1Id    String
+  user2Id    String
+  status     String   @default("active") // active | unmatched
+  matchCount Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user1      User     @relation("MatchUser1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2      User     @relation("MatchUser2", fields: [user2Id], references: [id], onDelete: Cascade)
+
+  @@unique([user1Id, user2Id])
 }
 
 model RefreshToken {
